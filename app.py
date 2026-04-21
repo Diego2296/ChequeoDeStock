@@ -39,23 +39,57 @@ if pdf_file and excel_file:
     
     df_presupuesto = pd.DataFrame(data_pdf)
 
-    # Procesar Excel
+    if pdf_file and excel_file:
+    # --- PROCESAR PDF ---
+    data_pdf = []
+    with pdfplumber.open(pdf_file) as pdf:
+        for page in pdf.pages:
+            table = page.extract_table()
+            if table:
+                for row in table:
+                    # Filtramos filas vacías o encabezados
+                    if row[0] and row[1] and any(char.isdigit() for char in str(row[1])):
+                        try:
+                            # Limpieza de código: quitamos saltos de línea internos
+                            codigo_pdf = str(row[0]).strip().replace('\n', '')
+                            
+                            # Limpieza de cantidad: extrae solo el número
+                            cant_raw = str(row[1]).split()[0]
+                            cant_clean = float(cant_raw.replace('.', '').replace(',', '.'))
+                            
+                            data_pdf.append({
+                                "Material": codigo_pdf,
+                                "Descripción": str(row[2]).strip().replace('\n', ' '),
+                                "Pedido": cant_clean
+                            })
+                        except:
+                            continue
+    
+    df_pdf = pd.DataFrame(data_pdf)
+
+    # --- PROCESAR EXCEL ---
     df_stock = pd.read_excel(excel_file)
     
-    # Cruce de datos (Join)
-    df_final = pd.merge(df_presupuesto, df_stock, on="Material", how="left")
+    # LIMPIEZA CLAVE: Quitamos espacios ocultos en los nombres de las columnas del Excel
+    df_stock.columns = [str(c).strip() for c in df_stock.columns]
     
-    # Cálculo de disponibilidad
+    # Aseguramos que la columna 'Material' en el Excel sea texto y no tenga espacios
+    if 'Material' in df_stock.columns:
+        df_stock['Material'] = df_stock['Material'].astype(str).str.strip()
+
+    # --- CRUCE DE DATOS ---
+    # Ahora 'Material' existe en ambos porque lo forzamos arriba
+    df_final = pd.merge(df_pdf, df_stock, on="Material", how="left")
+    
+    # Lógica de stock
     df_final['Diferencia'] = df_final['Libre utilización'] - df_final['Pedido']
     df_final['Estado'] = df_final['Diferencia'].apply(
-        lambda x: "✅ Disponible" if x >= 0 else ("⚠️ FALTANTE" if x < 0 else "❓ No encontrado")
+        lambda x: "✅ OK" if x >= 0 else ("❌ FALTANTE" if x < 0 else "❓ NO ENCONTRADO")
     )
 
-    st.subheader("📊 Resultados de la Comparación")
+    # --- MOSTRAR RESULTADOS ---
+    st.subheader("📋 Resultado del Chequeo")
+    cols_a_mostrar = ['Material', 'Descripción', 'Pedido', 'Libre utilización', 'Estado']
     
-    # Estilado simple
-    def highlight_status(val):
-        color = '#ff4b4b' if "FALTANTE" in val else ('#28a745' if "Disponible" in val else '#6c757d')
-        return f'background-color: {color}; color: white; font-weight: bold'
-
-    st.dataframe(df_final[['Material', 'Descripción', 'Pedido', 'Libre utilización', 'Estado']].style.applymap(highlight_status, subset=['Estado']), use_container_width=True)
+    # Mostramos solo las columnas que existen
+    st.dataframe(df_final[[c for c in cols_a_mostrar if c in df_final.columns]], use_container_width=True)
