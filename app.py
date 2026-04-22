@@ -47,22 +47,23 @@ if pdf_file and excel_file:
         st.error("⚠️ No se detectaron productos legibles en el PDF. Revisa el formato del archivo subido.")
     else:
         # --- PROCESAR EXCEL ---
-        # Detectamos automáticamente el tipo de archivo para usar el motor correcto
         nombre_archivo = excel_file.name.lower()
         
         if nombre_archivo.endswith('.csv'):
             # Si el sistema contable le tiró un CSV, lo leemos separado por comas o punto y coma
             try:
                 df_stock = pd.read_csv(excel_file)
-            except:
+            except Exception:
                 excel_file.seek(0) # Reiniciamos el puntero de lectura
                 df_stock = pd.read_csv(excel_file, sep=';')
-        elif nombre_archivo.endswith('.xls'):
-            # Formato viejo de Excel
-            df_stock = pd.read_excel(excel_file)
         else:
-            # Formato nuevo de Excel (.xlsx) - Forzamos openpyxl
-            df_stock = pd.read_excel(excel_file, engine='openpyxl')
+            # Como los ERP suelen exportar .xlsx camuflados como .xls, intentamos el motor moderno primero
+            try:
+                df_stock = pd.read_excel(excel_file, engine='openpyxl')
+            except Exception:
+                # Si falla, entonces sí era un .xls viejo de verdad
+                excel_file.seek(0)
+                df_stock = pd.read_excel(excel_file)
         
         # Limpieza inicial de encabezados
         df_stock.columns = [str(c).strip() for c in df_stock.columns]
