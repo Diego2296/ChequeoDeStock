@@ -5,13 +5,71 @@ import pdfplumber
 st.set_page_config(page_title="Control de Stock - DYCSA", layout="wide")
 
 st.title("🏗️ Validador de Stock para Construcción")
-st.info("Carga el presupuesto en PDF y el stock diario en Excel/CSV para verificar disponibilidad.")
+st.info("Carga el presupuesto en PDF y el stock diario (incluso exportaciones de SAP) para verificar disponibilidad.")
 
 col1, col2 = st.columns(2)
 with col1:
     pdf_file = st.file_uploader("1. Subir Presupuesto (PDF)", type="pdf")
 with col2:
-    excel_file = st.file_uploader("2. Subir Stock del Día (Excel/CSV)", type=["xlsx", "xls", "csv"])
+    excel_file = st.file_uploader("2. Subir Stock del Día (SAP/Excel/CSV)", type=["xlsx", "xls", "csv"])
+
+def leer_archivo_sap(file):
+    """
+    Función de fuerza bruta para leer exportaciones de SAP.
+    Prueba todos los formatos posibles hasta que uno devuelva más de 1 columna.
+    """
+    # 1. Intento: Excel Moderno
+    try:
+        file.seek(0)
+        df = pd.read_excel(file, engine='openpyxl')
+        if not df.empty and len(df.columns) > 1: return df
+    except: pass
+    
+    # 2. Intento: Excel Antiguo
+    try:
+        file.seek(0)
+        df = pd.read_excel(file)
+        if not df.empty and len(df.columns) > 1: return df
+    except: pass
+
+    # 3. Intento: CSV estándar
+    try:
+        file.seek(0)
+        df = pd.read_csv(file)
+        if len(df.columns) > 1: return df
+    except: pass
+
+    # 4. Intento: CSV europeo (Punto y coma)
+    try:
+        file.seek(0)
+        df = pd.read_csv(file, sep=';')
+        if len(df.columns) > 1: return df
+    except: pass
+
+    # 5. Intento: Formato SAP TSV (Tab-Separated Values) con UTF-16
+    try:
+        file.seek(0)
+        df = pd.read_csv(file, sep='\t', encoding='utf-16')
+        if len(df.columns) > 1: return df
+    except: pass
+    
+    # 6. Intento: Formato SAP TSV con UTF-8
+    try:
+        file.seek(0)
+        df = pd.read_csv(file, sep='\t', encoding='utf-8')
+        if len(df.columns) > 1: return df
+    except: pass
+
+    # 7. Intento: HTML disfrazado de Excel (Muy común en SAP ALV)
+    try:
+        file.seek(0)
+        # Leemos el contenido como HTML
+        dfs = pd.read_html(file.read().decode('utf-8'))
+        if len(dfs) > 0 and len(dfs[0].columns) > 1: return dfs[0]
+    except: pass
+    
+    # Si todo lo anterior falla
+    return None
 
 if pdf_file and excel_file:
     # --- PROCESAR PDF ---
@@ -41,28 +99,14 @@ if pdf_file and excel_file:
     if df_pdf.empty:
         st.error("⚠️ No se detectaron productos legibles en el PDF. Revisa el formato del archivo subido.")
     else:
-        # --- PROCESAR EXCEL / CSV ---
-        nombre_archivo = excel_file.name.lower()
+        # --- PROCESAR EXCEL / SAP ---
+        df_stock = leer_archivo_sap(excel_file)
         
-        if nombre_archivo.endswith('.csv'):
-            # Pandas lee CSVs por defecto con comas. Si no falla pero devuelve 1 sola columna gigante, 
-            # es porque en realidad estaba separado por punto y coma (;).
-            df_stock = pd.read_csv(excel_file)
-            if len(df_stock.columns) == 1:
-                excel_file.seek(0)
-                df_stock = pd.read_csv(excel_file, sep=';')
-        else:
-            try:
-                df_stock = pd.read_excel(excel_file, engine='openpyxl')
-            except Exception:
-                excel_file.seek(0)
-                df_stock = pd.read_excel(excel_file)
-        
-        # PREVENCIÓN DE ERROR: Verificamos que sí tenga columnas
-        if df_stock.empty or len(df_stock.columns) == 0:
-            st.error("El archivo de stock está vacío o no se pudo leer el formato.")
+        if df_stock is None or df_stock.empty or len(df_stock.columns) < 2:
+            st.error("❌ Formato de SAP no reconocido. Por favor, abre el archivo en Excel, ve a 'Guardar como...' y guárdalo explícitamente como 'Libro de Excel (*.xlsx)' antes de subirlo.")
             st.stop()
             
+        # Limpieza de columnas
         df_stock.columns = [str(c).strip() for c in df_stock.columns]
         
         if 'Material' in df_stock.columns:
@@ -78,11 +122,10 @@ if pdf_file and excel_file:
                 break
                 
         if not col_stock_real:
-            # Si sigue sin encontrarla, agarramos la penúltima (solo si hay al menos 2 columnas)
             if len(df_stock.columns) >= 2:
                 col_stock_real = df_stock.columns[-2]
             else:
-                col_stock_real = df_stock.columns[0] # Fallback si hay 1 sola columna para no crashear
+                col_stock_real = df_stock.columns[0]
 
         df_stock.rename(columns={col_stock_real: 'Stock_Disponible'}, inplace=True)
 
