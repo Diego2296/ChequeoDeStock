@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import pdfplumber
+import re
 
 st.set_page_config(page_title="Control de Stock - DYCSA", layout="wide")
 
@@ -13,100 +14,113 @@ with col1:
 with col2:
     excel_file = st.file_uploader("2. Subir Stock del Día (SAP/Excel/CSV)", type=["xlsx", "xls", "csv"])
 
+def limpiar_numero(num_str):
+    """Convierte números complejos (ej: 1.000,50 o 1,000.50) a float de Python"""
+    num_str = str(num_str).strip()
+    if '.' in num_str and ',' in num_str:
+        if num_str.rfind('.') > num_str.rfind(','):
+            num_str = num_str.replace(',', '')
+        else:
+            num_str = num_str.replace('.', '').replace(',', '.')
+    else:
+        if ',' in num_str:
+            if num_str.count(',') > 1 or (len(num_str) - num_str.rfind(',') == 4):
+                num_str = num_str.replace(',', '')
+            else:
+                num_str = num_str.replace(',', '.')
+        elif '.' in num_str:
+            if num_str.count('.') > 1 or (len(num_str) - num_str.rfind('.') == 4):
+                num_str = num_str.replace('.', '')
+    return float(num_str)
+
 def leer_archivo_sap(file):
-    """
-    Función de fuerza bruta para leer exportaciones de SAP.
-    Prueba todos los formatos posibles hasta que uno devuelva más de 1 columna.
-    """
-    # 1. Intento: Excel Moderno
-    try:
-        file.seek(0)
-        df = pd.read_excel(file, engine='openpyxl')
-        if not df.empty and len(df.columns) > 1: return df
-    except: pass
+    """Abre archivos Excel, CSV o HTML camuflados exportados desde SAP"""
+    formatos = [
+        lambda f: pd.read_excel(f, engine='openpyxl'),
+        lambda f: pd.read_excel(f),
+        lambda f: pd.read_csv(f),
+        lambda f: pd.read_csv(f, sep=';'),
+        lambda f: pd.read_csv(f, sep='\t', encoding='utf-16'),
+        lambda f: pd.read_csv(f, sep='\t', encoding='utf-8')
+    ]
     
-    # 2. Intento: Excel Antiguo
-    try:
-        file.seek(0)
-        df = pd.read_excel(file)
-        if not df.empty and len(df.columns) > 1: return df
-    except: pass
+    for intento in formatos:
+        try:
+            file.seek(0)
+            df = intento(file)
+            if not df.empty and len(df.columns) > 1: return df
+        except: pass
 
-    # 3. Intento: CSV estándar
     try:
         file.seek(0)
-        df = pd.read_csv(file)
-        if len(df.columns) > 1: return df
-    except: pass
-
-    # 4. Intento: CSV europeo (Punto y coma)
-    try:
-        file.seek(0)
-        df = pd.read_csv(file, sep=';')
-        if len(df.columns) > 1: return df
-    except: pass
-
-    # 5. Intento: Formato SAP TSV (Tab-Separated Values) con UTF-16
-    try:
-        file.seek(0)
-        df = pd.read_csv(file, sep='\t', encoding='utf-16')
-        if len(df.columns) > 1: return df
-    except: pass
-    
-    # 6. Intento: Formato SAP TSV con UTF-8
-    try:
-        file.seek(0)
-        df = pd.read_csv(file, sep='\t', encoding='utf-8')
-        if len(df.columns) > 1: return df
-    except: pass
-
-    # 7. Intento: HTML disfrazado de Excel (Muy común en SAP ALV)
-    try:
-        file.seek(0)
-        # Leemos el contenido como HTML
         dfs = pd.read_html(file.read().decode('utf-8'))
         if len(dfs) > 0 and len(dfs[0].columns) > 1: return dfs[0]
     except: pass
     
-    # Si todo lo anterior falla
     return None
 
 if pdf_file and excel_file:
-    # --- PROCESAR PDF ---
     data_pdf = []
     with pdfplumber.open(pdf_file) as pdf:
+        # ESTRATEGIA 1: Extracción de texto puro (Para presupuestos sin cuadrícula)
         for page in pdf.pages:
-            table = page.extract_table()
-            if table:
-                for row in table:
-                    try:
-                        if len(row) >= 3 and row[0] and row[1]:
-                            if any(char.isdigit() for char in str(row[1])):
-                                codigo_pdf = str(row[0]).strip().replace('\n', '')
-                                cant_raw = str(row[1]).split()[0]
-                                cant_clean = float(cant_raw.replace('.', '').replace(',', '.'))
-                                
-                                data_pdf.append({
-                                    "Material": codigo_pdf,
-                                    "Descripción PDF": str(row[2]).strip().replace('\n', ' '),
-                                    "Pedido": cant_clean
-                                })
-                    except Exception:
-                        continue
+            text = page.extract_text()
+            if text:
+                for line in text.split('\n'):
+                    parts = line.strip().split()
+                    if len(parts) >= 3:
+                        codigo = parts[0]
+                        cant_raw = parts[1]
+                        
+                        # Validar que sea un código de producto y la cantidad sea un número
+                        if len(codigo) >= 4 and codigo.replace('-', '').replace('_', '').isalnum() and any(c.isdigit() for c in cant_raw):
+                            if re.match(r'^[\d\.,]+$', cant_raw):
+                                try:
+                                    cant_clean = limpiar_numero(cant_raw)
+                                    # Limpiar unidades de medida
+                                    desc_start = 3 if len(parts) > 2 and parts[2].upper() in ['KG', 'UN', 'MT', 'MTS', 'LTS', 'C/U', 'M2', 'M3'] else 2
+                                    desc = " ".join(parts[desc_start:])
+                                    # Quitar precios al final de la línea para dejar solo el nombre
+                                    desc = re.sub(r'(\$\s*)?[\d\.,]+\s*(\$\s*)?[\d\.,]+$', '', desc).strip()
+                                    
+                                    data_pdf.append({
+                                        "Material": codigo,
+                                        "Descripción PDF": desc,
+                                        "Pedido": cant_clean
+                                    })
+                                except: pass
+
+        # ESTRATEGIA 2: Fallback a tablas clásicas
+        if not data_pdf:
+            for page in pdf.pages:
+                table = page.extract_table()
+                if table:
+                    for row in table:
+                        try:
+                            if len(row) >= 3 and row[0] and row[1]:
+                                if any(char.isdigit() for char in str(row[1])):
+                                    codigo_pdf = str(row[0]).strip().replace('\n', '')
+                                    cant_raw = str(row[1]).split()[0]
+                                    cant_clean = limpiar_numero(cant_raw)
+                                    data_pdf.append({
+                                        "Material": codigo_pdf,
+                                        "Descripción PDF": str(row[2]).strip().replace('\n', ' '),
+                                        "Pedido": cant_clean
+                                    })
+                        except Exception: continue
     
     df_pdf = pd.DataFrame(data_pdf, columns=["Material", "Descripción PDF", "Pedido"])
+    df_pdf = df_pdf.drop_duplicates(subset=["Material", "Pedido"])
 
     if df_pdf.empty:
         st.error("⚠️ No se detectaron productos legibles en el PDF. Revisa el formato del archivo subido.")
     else:
-        # --- PROCESAR EXCEL / SAP ---
         df_stock = leer_archivo_sap(excel_file)
         
         if df_stock is None or df_stock.empty or len(df_stock.columns) < 2:
-            st.error("❌ Formato de SAP no reconocido. Por favor, abre el archivo en Excel, ve a 'Guardar como...' y guárdalo explícitamente como 'Libro de Excel (*.xlsx)' antes de subirlo.")
+            st.error("❌ Formato de SAP no reconocido. Guarda el archivo como .xlsx en Excel y vuelve a intentar.")
             st.stop()
             
-        # Limpieza de columnas
         df_stock.columns = [str(c).strip() for c in df_stock.columns]
         
         if 'Material' in df_stock.columns:
@@ -122,14 +136,10 @@ if pdf_file and excel_file:
                 break
                 
         if not col_stock_real:
-            if len(df_stock.columns) >= 2:
-                col_stock_real = df_stock.columns[-2]
-            else:
-                col_stock_real = df_stock.columns[0]
+            col_stock_real = df_stock.columns[-2] if len(df_stock.columns) >= 2 else df_stock.columns[0]
 
         df_stock.rename(columns={col_stock_real: 'Stock_Disponible'}, inplace=True)
 
-        # --- CRUCE DE DATOS ---
         df_final = pd.merge(df_pdf, df_stock, on="Material", how="left")
         
         df_final['Stock_Disponible'] = pd.to_numeric(df_final['Stock_Disponible'], errors='coerce').fillna(0)
@@ -139,7 +149,6 @@ if pdf_file and excel_file:
             lambda x: "✅ OK" if x >= 0 else ("❌ FALTANTE" if x < 0 else "❓ NO ENCONTRADO")
         )
 
-        # --- RESULTADOS ---
         st.subheader("📋 Resultado del Chequeo")
         
         def color_result(val):
