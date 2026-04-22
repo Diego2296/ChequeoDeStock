@@ -159,7 +159,7 @@ if pdf_file and excel_file:
         cols_a_mostrar = ['Material', 'Descripción PDF', 'Pedido', 'Stock_Disponible', 'Estado']
         
         st.dataframe(
-            df_final[[c for c in cols_a_mostrar if c in df_final.columns]].style.applymap(color_result, subset=['Estado']), 
+            df_final[[c for c in cols_a_mostrar if c in df_final.columns]].style.map(color_result, subset=['Estado']), 
             use_container_width=True
         )
 
