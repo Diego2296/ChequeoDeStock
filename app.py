@@ -70,26 +70,45 @@ if pdf_file and excel_file:
     # --- PROCESAR EXCEL ---
     df_stock = pd.read_excel(excel_file)
     
-    # LIMPIEZA CLAVE: Quitamos espacios ocultos en los nombres de las columnas del Excel
+    # Limpieza de espacios en los nombres de las columnas
     df_stock.columns = [str(c).strip() for c in df_stock.columns]
     
-    # Aseguramos que la columna 'Material' en el Excel sea texto y no tenga espacios
+    # Aseguramos que la columna 'Material' sea texto
     if 'Material' in df_stock.columns:
         df_stock['Material'] = df_stock['Material'].astype(str).str.strip()
 
+    # DETECCIÓN AUTOMÁTICA DE LA COLUMNA DE STOCK
+    col_stock_real = None
+    for col in df_stock.columns:
+        # Buscamos variaciones (sin importar mayúsculas)
+        if "libre" in col.lower() and "utilizaci" in col.lower():
+            col_stock_real = col
+            break
+            
+    # Si no la encuentra por nombre, asumimos que es la penúltima (suele ser así en estos reportes)
+    if not col_stock_real:
+        col_stock_real = df_stock.columns[-2]
+
+    # Renombramos la columna a un nombre estándar y fácil para operar
+    df_stock.rename(columns={col_stock_real: 'Stock_Disponible'}, inplace=True)
+
     # --- CRUCE DE DATOS ---
-    # Ahora 'Material' existe en ambos porque lo forzamos arriba
     df_final = pd.merge(df_pdf, df_stock, on="Material", how="left")
     
-    # Lógica de stock
-    df_final['Diferencia'] = df_final['Libre utilización'] - df_final['Pedido']
+    # Limpiamos la columna de stock por si hay celdas vacías o con texto raro y la forzamos a número
+    df_final['Stock_Disponible'] = pd.to_numeric(df_final['Stock_Disponible'], errors='coerce').fillna(0)
+    
+    # Lógica matemática (ahora usamos nuestro nombre estándar)
+    df_final['Diferencia'] = df_final['Stock_Disponible'] - df_final['Pedido']
     df_final['Estado'] = df_final['Diferencia'].apply(
         lambda x: "✅ OK" if x >= 0 else ("❌ FALTANTE" if x < 0 else "❓ NO ENCONTRADO")
     )
 
     # --- MOSTRAR RESULTADOS ---
     st.subheader("📋 Resultado del Chequeo")
-    cols_a_mostrar = ['Material', 'Descripción', 'Pedido', 'Libre utilización', 'Estado']
     
-    # Mostramos solo las columnas que existen
+    # Lista de columnas que queremos mostrar
+    cols_a_mostrar = ['Material', 'Descripción', 'Pedido', 'Stock_Disponible', 'Estado']
+    
+    # Mostramos el dataframe usando solo las columnas que sabemos que existen
     st.dataframe(df_final[[c for c in cols_a_mostrar if c in df_final.columns]], use_container_width=True)
