@@ -5,13 +5,13 @@ import pdfplumber
 st.set_page_config(page_title="Control de Stock - DYCSA", layout="wide")
 
 st.title("🏗️ Validador de Stock para Construcción")
-st.info("Carga el presupuesto en PDF y el stock diario en Excel para verificar disponibilidad.")
+st.info("Carga el presupuesto en PDF y el stock diario en Excel/CSV para verificar disponibilidad.")
 
 col1, col2 = st.columns(2)
 with col1:
     pdf_file = st.file_uploader("1. Subir Presupuesto (PDF)", type="pdf")
 with col2:
-    excel_file = st.file_uploader("2. Subir Stock del Día (Excel)", type=["xlsx", "xls", "csv"])
+    excel_file = st.file_uploader("2. Subir Stock del Día (Excel/CSV)", type=["xlsx", "xls", "csv"])
 
 if pdf_file and excel_file:
     # --- PROCESAR PDF ---
@@ -22,12 +22,9 @@ if pdf_file and excel_file:
             if table:
                 for row in table:
                     try:
-                        # PREVENCIÓN DE ERRORES: Nos aseguramos de que la fila tenga al menos 3 columnas
                         if len(row) >= 3 and row[0] and row[1]:
                             if any(char.isdigit() for char in str(row[1])):
                                 codigo_pdf = str(row[0]).strip().replace('\n', '')
-                                
-                                # Limpieza de cantidad (ej: "1000.00 KG" -> 1000.0)
                                 cant_raw = str(row[1]).split()[0]
                                 cant_clean = float(cant_raw.replace('.', '').replace(',', '.'))
                                 
@@ -39,33 +36,33 @@ if pdf_file and excel_file:
                     except Exception:
                         continue
     
-    # LA MAGIA QUE SOLUCIONA EL ERROR: Forzamos la creación de columnas aunque no haya datos
     df_pdf = pd.DataFrame(data_pdf, columns=["Material", "Descripción PDF", "Pedido"])
 
-    # Si la extracción falló y está vacío, le avisamos al usuario en vez de crashear
     if df_pdf.empty:
         st.error("⚠️ No se detectaron productos legibles en el PDF. Revisa el formato del archivo subido.")
     else:
-        # --- PROCESAR EXCEL ---
+        # --- PROCESAR EXCEL / CSV ---
         nombre_archivo = excel_file.name.lower()
         
         if nombre_archivo.endswith('.csv'):
-            # Si el sistema contable le tiró un CSV, lo leemos separado por comas o punto y coma
-            try:
-                df_stock = pd.read_csv(excel_file)
-            except Exception:
-                excel_file.seek(0) # Reiniciamos el puntero de lectura
+            # Pandas lee CSVs por defecto con comas. Si no falla pero devuelve 1 sola columna gigante, 
+            # es porque en realidad estaba separado por punto y coma (;).
+            df_stock = pd.read_csv(excel_file)
+            if len(df_stock.columns) == 1:
+                excel_file.seek(0)
                 df_stock = pd.read_csv(excel_file, sep=';')
         else:
-            # Como los ERP suelen exportar .xlsx camuflados como .xls, intentamos el motor moderno primero
             try:
                 df_stock = pd.read_excel(excel_file, engine='openpyxl')
             except Exception:
-                # Si falla, entonces sí era un .xls viejo de verdad
                 excel_file.seek(0)
                 df_stock = pd.read_excel(excel_file)
         
-        # Limpieza inicial de encabezados
+        # PREVENCIÓN DE ERROR: Verificamos que sí tenga columnas
+        if df_stock.empty or len(df_stock.columns) == 0:
+            st.error("El archivo de stock está vacío o no se pudo leer el formato.")
+            st.stop()
+            
         df_stock.columns = [str(c).strip() for c in df_stock.columns]
         
         if 'Material' in df_stock.columns:
@@ -81,7 +78,11 @@ if pdf_file and excel_file:
                 break
                 
         if not col_stock_real:
-            col_stock_real = df_stock.columns[-2]
+            # Si sigue sin encontrarla, agarramos la penúltima (solo si hay al menos 2 columnas)
+            if len(df_stock.columns) >= 2:
+                col_stock_real = df_stock.columns[-2]
+            else:
+                col_stock_real = df_stock.columns[0] # Fallback si hay 1 sola columna para no crashear
 
         df_stock.rename(columns={col_stock_real: 'Stock_Disponible'}, inplace=True)
 
